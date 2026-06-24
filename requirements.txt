@@ -1,0 +1,8 @@
+click
+loguru
+python-dotenv
+cryptography
+pyyaml
+flake8
+black
+pytest
