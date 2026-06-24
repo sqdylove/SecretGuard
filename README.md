@@ -1,43 +1,53 @@
 # SecretGuard
 
-SecretGuard is a Python CLI project for secure secret management and automation.
+SecretGuard — это Python CLI-проект для безопасного управления секретами и автоматизации.
 
-## Project structure
+## Структура проекта
 
-- `main.py` — entry point for the CLI application
-- `src/cli.py` — CLI commands and logging setup
-- `core/` — project core package
-- `configs/` — configuration files and templates
-- `logs/` — generated runtime logs
-- `tests/` — unit and integration tests
+- `main.py` — точка входа для CLI-приложения
+- `src/` — пакет с CLI и компонентами приложения
+  - `src/cli.py` — команды CLI и настройка логирования
+- `core/` — основная логика проекта
+- `configs/` — конфигурационные файлы и шаблоны
+- `logs/` — сохранённые журналы работы
+- `tests/` — юнит- и интеграционные тесты
 
-## Getting started
+## Корневые файлы
 
-1. Create a virtual environment:
+- `.flake8` — настройки Flake8
+- `pyproject.toml` — настройки Black
+- `requirements.txt` — зависимости проекта
+- `.gitignore` — исключения Git
+- `README.md` — документация проекта
+
+## Быстрый старт
+
+1. Создайте виртуальное окружение:
    ```bash
    python -m venv .venv
    ```
-2. Activate it:
+2. Активируйте его:
    - Windows: `.venv\Scripts\activate`
    - macOS/Linux: `source .venv/bin/activate`
-3. Install dependencies:
+3. Установите зависимости:
    ```bash
    pip install -r requirements.txt
    ```
-4. Run the CLI:
+4. Запустите CLI:
    ```bash
    python main.py --help
    ```
 
 ## CLI
 
-The project exposes a `SecretGuard` CLI with a version command:
+Проект предоставляет CLI `SecretGuard` с командой версии:
 
 ```bash
 python main.py --version
 ```
 
-## Formatting and linting
+## Форматирование и линтинг
 
-- `black` for code formatting
-- `flake8` for linting
+- `black` — для форматирования кода
+- `flake8` — для статического анализа
+
