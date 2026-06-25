@@ -1,31 +1,41 @@
-import os
+import shutil
+import sys
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 
 import click
+import yaml
 from loguru import logger
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "app.log"
 
-logger.remove()
-logger.add(
-    LOG_FILE,
-    rotation="00:00",
-    retention="7 days",
-    level="INFO",
-    format="{time:HH:mm:ss} | {level} | {message}",
-    enqueue=True,
-    backtrace=True,
-    diagnose=True,
-)
-logger.add(
-    lambda msg: click.echo(msg, err=True),
-    colorize=True,
-    format="<green>{time:HH:mm:ss}</green> | <level>{level}</level> | <level>{message}</level>",
-    level="INFO",
-)
+
+def configure_logging(debug: bool = False) -> None:
+    logger.remove()
+    level = "DEBUG" if debug else "INFO"
+    logger.add(
+        LOG_FILE,
+        rotation="00:00",
+        retention="7 days",
+        level=level,
+        format="{time:HH:mm:ss} | {level} | {message}",
+        enqueue=True,
+        backtrace=True,
+        diagnose=True,
+    )
+    logger.add(
+        lambda msg: click.echo(msg, err=True),
+        colorize=True,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level}</level> | <level>{message}</level>",
+        level=level,
+    )
+
+
+configure_logging(False)
+
 
 class CustomClickGroup(click.Group):
     def main(self, *args, **kwargs):
@@ -36,15 +46,48 @@ class CustomClickGroup(click.Group):
             raise click.ClickException("An error occurred. Check logs for details.") from exc
 
 
+def load_config() -> dict:
+    config_path = Path.cwd() / ".secretguard" / "config.yaml"
+    if not config_path.exists():
+        click.echo(
+            "Проект не инициализирован. Запустите secretguard init",
+            err=True,
+            color=True,
+        )
+        sys.exit(1)
+
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        logger.info("Конфигурация загружена из .secretguard/config.yaml")
+        return config
+    except Exception as exc:
+        logger.error(f"Не удалось загрузить конфигурацию: {exc}")
+        raise click.ClickException("Ошибка при загрузке конфигурации.") from exc
+
+
+def require_init(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        load_config()
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 @click.group(cls=CustomClickGroup)
+@click.option("--debug", is_flag=True, help="Включить режим отладки")
 @click.version_option(
     version="0.1.0",
     prog_name="SecretGuard",
     message="%(prog)s v%(version)s",
 )
-def cli() -> None:
+@click.pass_context
+def cli(ctx, debug: bool) -> None:
     """SecretGuard CLI."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["debug"] = debug
+    configure_logging(debug)
 
 
 @cli.command()
@@ -65,19 +108,12 @@ def init() -> None:
             logger.info("Инициализация отменена пользователем")
             raise click.ClickException("Инициализация отменена")
         logger.info("Перезапись существующей папки .secretguard")
+        if secret_dir.is_dir():
+            shutil.rmtree(secret_dir)
+        else:
+            secret_dir.unlink()
 
     try:
-        if secret_dir.exists() and secret_dir.is_dir():
-            for item in secret_dir.iterdir():
-                if item.is_dir():
-                    for sub_item in item.iterdir():
-                        if sub_item.is_file():
-                            sub_item.unlink()
-                    item.rmdir()
-                else:
-                    item.unlink()
-            secret_dir.rmdir()
-
         secret_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Создана директория .secretguard")
 
