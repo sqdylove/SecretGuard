@@ -18,9 +18,9 @@ def save_key(key: bytes, key_path: str) -> None:
 
 def encrypt_secret(data: str, key: bytes) -> str:
     token = Fernet(key).encrypt(data.encode("utf-8"))
-    return base64.urlsafe_b64encode(token).decode("utf-8")
+    return token.decode("utf-8")
 
 
 def decrypt_secret(token: str, key: bytes) -> str:
-    decoded_token = base64.urlsafe_b64decode(token.encode("utf-8"))
+    decoded_token = token.encode("utf-8")
     return Fernet(key).decrypt(decoded_token).decode("utf-8")
