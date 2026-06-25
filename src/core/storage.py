@@ -1,7 +1,8 @@
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from src.core.crypto import decrypt_secret, encrypt_secret, generate_key, load_key, save_key
 
@@ -30,22 +31,58 @@ class SecretStorage:
         master_key = self._get_master_key()
         encrypted_value = encrypt_secret(value, master_key)
 
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
         secrets = self._load_data()
-        secrets[key] = encrypted_value
+        existing_versions = secrets.get(key)
 
-        with self.data_path.open("w", encoding="utf-8") as data_file:
-            json.dump(secrets, data_file, indent=2, ensure_ascii=False)
+        if isinstance(existing_versions, list):
+            versions = existing_versions
+            next_version = 1
+            for version_entry in versions:
+                if isinstance(version_entry, dict) and isinstance(version_entry.get("version"), int):
+                    next_version = max(next_version, version_entry["version"] + 1)
+        elif existing_versions is None:
+            versions = []
+            next_version = 1
+        else:
+            versions = [{"version": 1, "value": existing_versions, "updated_at": datetime.now().isoformat()}]
+            next_version = 2
+
+        versions.append(
+            {"version": next_version, "value": encrypted_value, "updated_at": datetime.now().isoformat()}
+        )
+        secrets[key] = versions
+        self._save_data(secrets)
 
     def get_secret(self, key: str) -> Optional[str]:
         master_key = self._get_master_key()
         secrets = self._load_data()
 
-        encrypted_value = secrets.get(key)
-        if encrypted_value is None:
+        versions = secrets.get(key)
+        if not isinstance(versions, list) or not versions:
             return None
 
-        return decrypt_secret(encrypted_value, master_key)
+        latest_entry = versions[-1]
+        if not isinstance(latest_entry, dict):
+            return None
+
+        return decrypt_secret(latest_entry["value"], master_key)
+
+    def get_secret_version(self, key: str, version: int) -> Optional[str]:
+        master_key = self._get_master_key()
+        secrets = self._load_data()
+
+        versions = secrets.get(key)
+        if not isinstance(versions, list):
+            return None
+
+        for version_entry in versions:
+            if isinstance(version_entry, dict) and version_entry.get("version") == version:
+                return decrypt_secret(version_entry["value"], master_key)
+
+        return None
+
+    def list_secrets(self) -> List[str]:
+        return sorted(self._load_data().keys())
 
     def _load_data(self) -> dict:
         if not self.data_path.exists():
@@ -54,7 +91,7 @@ class SecretStorage:
         try:
             with self.data_path.open("r", encoding="utf-8") as data_file:
                 data = json.load(data_file)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, OSError) as exc:
             logger.error("Corrupted data storage at %s", self.data_path)
             raise ValueError("Corrupted data storage") from exc
 
@@ -63,3 +100,8 @@ class SecretStorage:
             raise ValueError("Corrupted data storage")
 
         return data
+
+    def _save_data(self, data: dict) -> None:
+        self.data_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.data_path.open("w", encoding="utf-8") as data_file:
+            json.dump(data, data_file, indent=2, ensure_ascii=False)

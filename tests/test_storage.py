@@ -36,3 +36,24 @@ def test_storage_raises_on_corrupt_data_file(tmp_path: Path, caplog: pytest.LogC
         storage.get_secret("any")
 
     assert "Corrupted data storage" in caplog.text
+
+
+def test_storage_creates_new_versions_for_existing_secret(tmp_path: Path):
+    storage = SecretStorage(tmp_path / "config.json")
+
+    storage.save_secret("api-key", "first-value")
+    storage.save_secret("api-key", "second-value")
+
+    data = json.loads(storage.data_path.read_text(encoding="utf-8"))
+    versions = data["api-key"]
+
+    assert len(versions) == 2
+    assert versions[0]["version"] == 1
+    assert versions[1]["version"] == 2
+    assert isinstance(versions[0]["updated_at"], str)
+    assert isinstance(versions[1]["updated_at"], str)
+
+    assert storage.get_secret("api-key") == "second-value"
+    assert storage.get_secret_version("api-key", 1) == "first-value"
+    assert storage.get_secret_version("api-key", 99) is None
+    assert storage.list_secrets() == ["api-key"]
