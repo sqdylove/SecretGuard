@@ -6,3 +6,4 @@ pyyaml
 flake8
 black
 pytest
+pyzipper
