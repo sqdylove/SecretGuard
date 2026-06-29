@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -7,6 +8,7 @@ from pathlib import Path
 import click
 import yaml
 from loguru import logger
+from src.core.storage import SecretStorage
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -38,6 +40,19 @@ configure_logging(False)
 
 
 class CustomClickGroup(click.Group):
+    command_aliases = {
+        "-a": "add",
+    }
+
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+        alias = self.command_aliases.get(cmd_name)
+        if alias:
+            return super().get_command(ctx, alias)
+        return None
+
     def main(self, *args, **kwargs):
         try:
             return super().main(*args, **kwargs)
@@ -46,7 +61,7 @@ class CustomClickGroup(click.Group):
             raise click.ClickException("An error occurred. Check logs for details.") from exc
 
 
-def load_config() -> dict:
+def load_config() -> Path:
     config_path = Path.cwd() / ".secretguard" / "config.yaml"
     if not config_path.exists():
         click.echo(
@@ -58,9 +73,9 @@ def load_config() -> dict:
 
     try:
         with config_path.open("r", encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
+            yaml.safe_load(f)
         logger.info("Конфигурация загружена из .secretguard/config.yaml")
-        return config
+        return config_path
     except Exception as exc:
         logger.error(f"Не удалось загрузить конфигурацию: {exc}")
         raise click.ClickException("Ошибка при загрузке конфигурации.") from exc
@@ -88,6 +103,30 @@ def cli(ctx, debug: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["debug"] = debug
     configure_logging(debug)
+
+
+@cli.command(name="add", aliases=["-a"])
+@require_init
+@click.argument("key")
+@click.argument("value")
+def add(key: str, value: str) -> None:
+    """Добавляет секрет с версионированием."""
+    try:
+        config_path = load_config()
+        storage = SecretStorage(config_path)
+        storage.save_secret(key, value)
+        try:
+            username = os.getlogin()
+        except OSError:
+            username = os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
+
+        logger.info(f"Секрет {key} добавлен пользователем {username}")
+        click.echo(f"Секрет '{key}' успешно добавлен.")
+    except Exception as exc:
+        logger.error(f"Не удалось добавить секрет {key}: {exc}", exc_info=True)
+        raise click.ClickException(
+            "Не удалось добавить секрет. Проверьте журналы и повторите попытку."
+        ) from exc
 
 
 @cli.command()
