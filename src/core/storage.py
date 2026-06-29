@@ -10,6 +10,11 @@ from src.core.crypto import decrypt_secret, encrypt_secret, generate_key, load_k
 logger = logging.getLogger(__name__)
 
 
+class NeedConfirmError(Exception):
+    """Исключение, выбрасываемое при попытке удалить критичный секрет без подтверждения."""
+    pass
+
+
 class SecretStorage:
     def __init__(self, config_path: Path):
         self.config_path = Path(config_path)
@@ -82,7 +87,69 @@ class SecretStorage:
         return None
 
     def list_secrets(self) -> List[str]:
-        return sorted(self._load_data().keys())
+        secrets = self._load_data()
+        return sorted([
+            key for key, value in secrets.items()
+            if isinstance(value, list) and len(value) > 0
+        ])
+
+    def _is_critical_secret(self, key: str) -> bool:
+        """Проверяет, содержит ли ключ критичные слова."""
+        key_lower = key.lower()
+        return 'password' in key_lower or 'token' in key_lower
+
+    def delete_secret(self, key: str) -> None:
+        """Удаляет все версии секрета."""
+        if self._is_critical_secret(key):
+            raise NeedConfirmError('Это критичный секрет.\n\nТребуется подтверждение удаления')
+
+        secrets = self._load_data()
+        if key in secrets:
+            del secrets[key]
+            self._save_data(secrets)
+
+    def delete_version(self, key: str, version: int) -> None:
+        """Удаляет конкретную версию секрета."""
+        if self._is_critical_secret(key):
+            raise NeedConfirmError('Это критичный секрет.\n\nТребуется подтверждение удаления')
+
+        secrets = self._load_data()
+        if key not in secrets:
+            return
+
+        versions = secrets[key]
+        if not isinstance(versions, list):
+            return
+
+        # Фильтруем версии, исключая нужную
+        filtered_versions = [v for v in versions if not (isinstance(v, dict) and v.get("version") == version)]
+
+        if len(filtered_versions) == 0:
+            # Если версий не осталось, удаляем весь ключ
+            del secrets[key]
+        else:
+            # Иначе обновляем список версий
+            secrets[key] = filtered_versions
+
+        self._save_data(secrets)
+
+    def get_secret_history(self, key: str) -> List[dict]:
+        """Возвращает историю всех версий для ключа."""
+        secrets = self._load_data()
+        versions = secrets.get(key)
+
+        if not isinstance(versions, list):
+            return []
+
+        history = []
+        for version_entry in versions:
+            if isinstance(version_entry, dict):
+                history.append({
+                    "version": version_entry.get("version"),
+                    "updated_at": version_entry.get("updated_at")
+                })
+
+        return history
 
     def _load_data(self) -> dict:
         if not self.data_path.exists():
