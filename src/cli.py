@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 import yaml
 from loguru import logger
-from src.core.storage import SecretStorage
+from src.core.storage import SecretStorage, NeedConfirmError
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +42,9 @@ configure_logging(False)
 class CustomClickGroup(click.Group):
     command_aliases = {
         "-a": "add",
+        "-g": "get",
+        "-l": "list",
+        "-d": "delete",
     }
 
     def get_command(self, ctx, cmd_name):
@@ -105,7 +108,7 @@ def cli(ctx, debug: bool) -> None:
     configure_logging(debug)
 
 
-@cli.command(name="add", aliases=["-a"])
+@cli.command(name="add")
 @require_init
 @click.argument("key")
 @click.argument("value")
@@ -126,6 +129,92 @@ def add(key: str, value: str) -> None:
         logger.error(f"Не удалось добавить секрет {key}: {exc}", exc_info=True)
         raise click.ClickException(
             "Не удалось добавить секрет. Проверьте журналы и повторите попытку."
+        ) from exc
+
+
+@cli.command(name="get")
+@require_init
+@click.argument("key")
+def get(key: str) -> None:
+    """Получает секрет по ключу."""
+    try:
+        config_path = load_config()
+        storage = SecretStorage(config_path)
+        secret = storage.get_secret(key)
+        if secret is None:
+            logger.error("Секрет %s не найден", key)
+            click.echo(click.style("Секрет не найден", fg="red"), err=True)
+            return
+
+        click.echo(secret)
+    except Exception as exc:
+        logger.error(f"Ошибка при получении секрета {key}: {exc}", exc_info=True)
+        raise click.ClickException(
+            "Не удалось получить секрет. Проверьте журналы и повторите попытку."
+        ) from exc
+
+
+@cli.command(name="list")
+@require_init
+def list_secrets() -> None:
+    """Выводит список сохраненных ключей."""
+    try:
+        config_path = load_config()
+        storage = SecretStorage(config_path)
+        secrets = storage.list_secrets()
+
+        for index, secret_key in enumerate(secrets, start=1):
+            click.echo(f"{index}. {secret_key}")
+    except Exception as exc:
+        logger.error(f"Ошибка при выводе списка секретов: {exc}", exc_info=True)
+        raise click.ClickException(
+            "Не удалось получить список секретов. Проверьте журналы и повторите попытку."
+        ) from exc
+
+
+@cli.command(name="logs")
+def logs() -> None:
+    """Показывает последние 20 строк журнала."""
+    try:
+        if not LOG_FILE.exists():
+            click.echo("Файл журнала не найден.")
+            return
+
+        content = LOG_FILE.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        for line in lines[-20:]:
+            click.echo(line)
+    except Exception as exc:
+        logger.error(f"Ошибка при чтении журнала: {exc}", exc_info=True)
+        raise click.ClickException(
+            "Не удалось прочитать журналы. Проверьте файлы и повторите попытку."
+        ) from exc
+
+
+@cli.command(name="delete")
+@require_init
+@click.argument("key")
+def delete(key: str) -> None:
+    """Удаляет секрет по ключу."""
+    try:
+        config_path = load_config()
+        storage = SecretStorage(config_path)
+        try:
+            storage.delete_secret(key)
+            click.echo(f"Секрет '{key}' удален.")
+        except NeedConfirmError:
+            confirm = click.confirm("Это критичный секрет. Удалить?")
+            if confirm:
+                storage.delete_secret(key)
+                click.echo(f"Секрет '{key}' удален.")
+            else:
+                click.echo("Удаление отменено")
+    except Exception as exc:
+        if isinstance(exc, click.ClickException):
+            raise
+        logger.error(f"Ошибка при удалении секрета {key}: {exc}", exc_info=True)
+        raise click.ClickException(
+            "Не удалось удалить секрет. Проверьте журналы и повторите попытку."
         ) from exc
 
 
