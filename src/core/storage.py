@@ -3,6 +3,9 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+import shutil
+
+import pyzipper
 
 from src.core.crypto import decrypt_secret, encrypt_secret, generate_key, load_key, save_key
 
@@ -13,6 +16,15 @@ logger = logging.getLogger(__name__)
 class NeedConfirmError(Exception):
     """Исключение, выбрасываемое при попытке удалить критичный секрет без подтверждения."""
     pass
+
+
+class MergeConflictError(Exception):
+    """Исключение, выбрасываемое при конфликте ключей при импорте секретов."""
+
+    def __init__(self, conflicts: List[str]):
+        self.conflicts = conflicts
+        message = f"Merge conflict for keys: {', '.join(conflicts)}"
+        super().__init__(message)
 
 
 class SecretStorage:
@@ -172,3 +184,134 @@ class SecretStorage:
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
         with self.data_path.open("w", encoding="utf-8") as data_file:
             json.dump(data, data_file, indent=2, ensure_ascii=False)
+
+    def export_secrets(self, password: str, export_path: Path) -> None:
+        """Экспортирует все секреты в ZIP-архив в открытом виде и защищает паролем.
+
+        В архиве будут два файла: `secrets.json` и `metadata.json`.
+        """
+        master_key = self._get_master_key()
+        data = self._load_data()
+
+        secrets_plain = {}
+        metadata = {}
+
+        for key, versions in data.items():
+            if not isinstance(versions, list) or len(versions) == 0:
+                continue
+
+            # Последняя версия как открытое значение
+            latest = versions[-1]
+            if not isinstance(latest, dict):
+                continue
+
+            plain_value = decrypt_secret(latest["value"], master_key)
+            secrets_plain[key] = plain_value
+
+            # metadata: список версий и дат
+            meta_versions = []
+            for v in versions:
+                if isinstance(v, dict):
+                    meta_versions.append({
+                        "version": v.get("version"),
+                        "updated_at": v.get("updated_at"),
+                    })
+
+            metadata[key] = meta_versions
+
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Используем pyzipper для AES-шифрования архива
+        with pyzipper.AESZipFile(str(export_path), 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
+            zf.setpassword(password.encode('utf-8'))
+            zf.writestr('secrets.json', json.dumps(secrets_plain, ensure_ascii=False, indent=2).encode('utf-8'))
+            zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2).encode('utf-8'))
+
+    def import_secrets(self, import_path: Path, password: str) -> None:
+        """Импортирует секреты из защищённого ZIP-архива и мержит с текущими.
+
+        При конфликте ключей бросает `MergeConflictError`.
+        """
+        master_key = self._get_master_key()
+
+        if not import_path.exists():
+            raise FileNotFoundError(f"Import file not found: {import_path}")
+
+        with pyzipper.AESZipFile(str(import_path), 'r') as zf:
+            zf.setpassword(password.encode('utf-8'))
+            try:
+                secrets_bytes = zf.read('secrets.json')
+            except KeyError as exc:
+                raise ValueError('secrets.json not found in archive') from exc
+
+            try:
+                secrets_to_import = json.loads(secrets_bytes.decode('utf-8'))
+            except Exception as exc:
+                raise ValueError('Invalid secrets.json content') from exc
+
+        if not isinstance(secrets_to_import, dict):
+            raise ValueError('secrets.json must contain an object')
+
+        existing = self._load_data()
+        conflicts = [k for k in secrets_to_import.keys() if k in existing]
+        if conflicts:
+            raise MergeConflictError(conflicts)
+
+        # Добавляем новые ключи как первая версия
+        for key, plain_value in secrets_to_import.items():
+            encrypted_value = encrypt_secret(plain_value, master_key)
+            existing[key] = [{
+                'version': 1,
+                'value': encrypted_value,
+                'updated_at': datetime.now().isoformat()
+            }]
+
+        self._save_data(existing)
+
+    def rotate_master_key(self, new_key: Optional[bytes] = None) -> None:
+        """Ротация мастер-ключа: генерирует/принимает новый ключ и перешифровывает все секреты.
+
+        Сохраняет новый ключ в `keys/master.key` и делает бэкап старого `data.json` как `data.json.bak`.
+        """
+        # Получаем старый ключ (если его нет — будет создан, но тогда данных скорее всего нет)
+        old_key = self._get_master_key()
+
+        if new_key is None:
+            new_key = generate_key()
+
+        # Загружаем существующие данные
+        data = self._load_data()
+
+        new_data = {}
+
+        for key, versions in data.items():
+            if not isinstance(versions, list):
+                continue
+
+            new_versions = []
+            for v in versions:
+                if not isinstance(v, dict):
+                    continue
+                # Декодируем старое значение и зашифровываем новым ключом
+                plain = decrypt_secret(v['value'], old_key)
+                new_encrypted = encrypt_secret(plain, new_key)
+                new_versions.append({
+                    'version': v.get('version'),
+                    'value': new_encrypted,
+                    'updated_at': v.get('updated_at')
+                })
+
+            new_data[key] = new_versions
+
+        # Бэкап текущего data.json
+        if self.data_path.exists():
+            bak_path = self.data_path.with_suffix(self.data_path.suffix + '.bak')
+            shutil.copy(str(self.data_path), str(bak_path))
+
+        # Сохраняем новый ключ
+        self.keys_path.mkdir(parents=True, exist_ok=True)
+        master_key_path = self.keys_path / 'master.key'
+        save_key(new_key, str(master_key_path))
+
+        # Записываем перешифрованные данные
+        self._save_data(new_data)
